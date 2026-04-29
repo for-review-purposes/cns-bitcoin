@@ -1,0 +1,754 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Blockchain.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">CNS Bitcoin (cns-bitcoin)</a> &gt; <a href="index.source.html" class="el_package">dom.institution.lab.cns.bitcoin.structure</a> &gt; <span class="el_source">Blockchain.java</span></div><h1>Blockchain.java</h1><pre class="source lang-java linenums">package dom.institution.lab.cns.bitcoin.structure;
+
+import dom.institution.lab.cns.bitcoin.node.BitcoinNode;
+import dom.institution.lab.cns.bitcoin.reporter.BitcoinReporter;
+import dom.institution.lab.cns.engine.IStructure;
+import dom.institution.lab.cns.engine.Simulation;
+import dom.institution.lab.cns.engine.reporter.Reporter;
+import dom.institution.lab.cns.engine.transaction.ITxContainer;
+import dom.institution.lab.cns.engine.transaction.Transaction;
+import dom.institution.lab.cns.engine.transaction.TransactionGroup;
+import dom.institution.lab.cns.engine.transaction.TxDependencyRegistry;
+
+import java.util.ArrayList;
+import java.util.BitSet;
+import java.util.Collections;
+
+/**
+ * Represents the blockchain structure for a Bitcoin simulation.
+ * &lt;p&gt;
+ * The {@linkplain Blockchain} maintains the main chain of blocks, 
+ * a list of orphan blocks, and tips (latest blocks in each chain).
+ * Blocks can be added either as validated new blocks or received via propagation.
+ * Transactions are stored within {@linkplain Block} objects.
+ * &lt;/p&gt;
+ * 
+ * &lt;p&gt;
+ * This class implements {@linkplain IStructure} to integrate with the simulation engine.
+ * &lt;/p&gt;
+ * 
+ * TODO: Consider optimizing some searches (e.g., block by ID) for large blockchains.
+ * 
+ * @see Block
+ * @see BitcoinNode
+ */
+<span class="fc" id="L35">public class Blockchain implements IStructure {</span>
+
+	 /** The main blockchain as a list of {@linkplain Block}s. Each block's getParent() points to its parent, through reference to the corresponding {@linkplain Block} object. */
+<span class="fc" id="L38">	ArrayList&lt;Block&gt; blockchain = new ArrayList&lt;Block&gt;();</span>
+	
+	/** List of orphan {@linkplain Block}s. {@linkplain Block}s end up here if they refer to a parent that does not exist in the blockchain (e.g., has delayed arrival). At key events the orphan {@linkplain Block}s are revisited. 
+	 */
+<span class="fc" id="L42">	ArrayList&lt;Block&gt; orphans = new ArrayList&lt;Block&gt;();</span>
+
+    /** List of tips, i.e., blocks that are at the end of each chain, and no other block points them as parents. */
+<span class="fc" id="L45">	ArrayList&lt;Block&gt; tips = new ArrayList&lt;Block&gt;();</span>
+	
+	/** A transaction group representing all transactions in the chain */
+<span class="fc" id="L48">	TransactionGroup allTx = new TransactionGroup();</span>
+	
+	
+	//----------------------------------------------------------------
+	// ADDING BLOCKS
+	//----------------------------------------------------------------
+	
+	
+	/**
+	 * Crudely request the addition of a validated {@linkplain Block block} to the blockchain. 
+	 * 
+	 * If the {@linkplain Block} has a parent (e.g., it has arrived from another node) the parent must be found (by ID) and the {@linkplain Block} must be appended on that parent. If parent is not found it is placed in orphans. 
+	 * 
+	 * If the {@linkplain Block} does not have parent (e.g., {@linkplain Block block} was just validated by the {@linkplain BitcoinNode Node} itself) it must be appended on the tallest non-overlapping path to genesis. In reality, the node will in every hash be aware of the parent of the node it is trying to validate and update it based on new events. 
+	 *  
+	 * @param b A validated block to be added to the chain. 
+	 */
+	public void addToStructure(Block b) {
+<span class="fc bfc" id="L66" title="All 2 branches covered.">		if (b.hasParent()) {</span>
+			// Typically it has parent when it is coming from the orphans list or propagation.
+<span class="fc" id="L68">			placeBlockInChain(b);</span>
+		} else {
+			// Has no parent when it is coming from own validation.
+<span class="fc" id="L71">			pushBlockToChain(b);</span>
+		}
+<span class="fc" id="L73">	}</span>
+	
+
+
+	/**
+	 * The {@linkplain Block} has parent, i.e. is the result of propagation. If the parent does not exist in the blockchain,
+	 * add the {@linkplain Block} to the orphans. If it is found, first check for overlaps with the chain (checking transaction IDs).
+	 * If those are not found, then just add the {@linkplain Block} to the blockchain with that parent.
+	 * Replace the parent in the tips list and update the height of the {@linkplain Block}.
+	 * If overlaps are found, then the {@linkplain Block} is corrupt and must be discarded.
+	 * @param b The {@linkplain Block} to be added to the blockchain.
+	 */
+	private void placeBlockInChain(Block b) {
+		// Find the parent. 
+		// Search by ID because the object may reside in another node.
+<span class="fc" id="L88">		Block parent = (Block) findParentOfbyID(b);</span>
+		
+		
+<span class="fc bfc" id="L91" title="All 2 branches covered.">		if (parent == null) {</span>
+			//Did not find parent, add to orphans
+<span class="fc" id="L93">			addToOrphans(b);</span>
+			
+		} else {
+			
+		
+			//Found the parent, check now for overlaps
+<span class="pc bpc" id="L99" title="1 of 2 branches missed.">			if (!hasChainOverlap(b,parent)) {</span>
+
+				//No overlaps found good to append.
+			
+<span class="fc" id="L103">				b.setHeight(parent.getHeight() + 1);</span>
+<span class="fc" id="L104">				addBlock(b);</span>
+
+				
+				// Tip management
+				
+				//Replace parent with block
+<span class="fc" id="L110">				tips.remove(parent);</span>
+<span class="fc" id="L111">				tips.add(b);</span>
+				
+<span class="fc" id="L113">				BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+	            		Simulation.currTime,
+<span class="fc" id="L116">	            		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="fc" id="L117">	            		b.getCurrentNodeID(),</span>
+<span class="fc" id="L118">						b.getID(),</span>
+<span class="fc" id="L119">						b.getParent().getID(),</span>
+<span class="fc" id="L120">						b.getHeight(),</span>
+<span class="fc" id="L121">						b.printIDs(&quot;;&quot;),</span>
+						&quot;Appended On Chain (w/ parent)&quot;, 
+<span class="fc" id="L123">	                    b.getValidationDifficulty(),</span>
+<span class="fc" id="L124">	                    b.getValidationCycles());</span>
+<span class="fc" id="L125">				processOrphans();</span>
+			} else {
+				
+				//Overlap found, discard block
+<span class="nc" id="L129">				BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+	            		Simulation.currTime,
+<span class="nc" id="L132">	            		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L133">	            		b.getCurrentNodeID(),</span>
+<span class="nc" id="L134">						b.getID(),</span>
+<span class="nc" id="L135">						b.getParent().getID(),</span>
+<span class="nc" id="L136">						b.getHeight(),</span>
+<span class="nc" id="L137">						b.printIDs(&quot;;&quot;),</span>
+						&quot;Discarded due to overlap with parent's chain&quot;, 
+<span class="nc" id="L139">	                    b.getValidationDifficulty(),</span>
+<span class="nc" id="L140">	                    b.getValidationCycles());</span>
+			
+			}
+		}
+<span class="fc" id="L144">	}</span>
+
+
+
+	/**
+	 * Pushes a {@linkplain Block block} without parents to blockchain.
+	 * 
+	 * This is mostly due to the block being just minted by the same node that places it,
+	 * or the node is child of the genesis block.  
+	 * 
+	 * It gets the tallest non-overlapping tip and appends the block there 
+	 * while replacing the block's parent with the block in the tips list.
+	 * While a block always contains a parent while being validated, we assume
+	 * here that the parent is selected after validation. This normally does not 
+	 * cause any violence to the consensus proceedings, given that such parent is 
+	 * guaranteed to exist (mining pool is always valid and non-overlapping). 
+	 *
+	 * If the chain is empty, make the block a genesis block with null as a parent.
+	 *
+	 * @param b The block to be pushed to the blockchain
+	 *
+	 */
+	private void pushBlockToChain(Block b) {
+
+		//Nonempty blockchain - find the tallest non-conflicting tip
+<span class="fc bfc" id="L169" title="All 2 branches covered.">		if (!blockchain.isEmpty()) {</span>
+
+<span class="fc" id="L171">			Block par = this.getNonOverlappingTip(b);</span>
+
+<span class="fc bfc" id="L173" title="All 2 branches covered.">			if (par != null) {</span>
+				//Prepare and append to structure
+<span class="fc" id="L175">				b.setParent(par);</span>
+<span class="fc" id="L176">				b.setHeight(par.getHeight() + 1);</span>
+				//blockchain.add(b);
+<span class="fc" id="L178">				addBlock(b);</span>
+
+<span class="fc" id="L180">				tips.add(b);</span>
+<span class="fc" id="L181">				tips.remove(((Block) b).getParent());</span>
+				
+				
+<span class="fc" id="L184">				BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+	            		Simulation.currTime,
+<span class="fc" id="L187">	            		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="fc" id="L188">	            		b.getCurrentNodeID(),</span>
+<span class="fc" id="L189">						b.getID(),</span>
+<span class="pc bpc" id="L190" title="1 of 2 branches missed.">						((b.getParent() == null) ? -1 : b.getParent().getID()),</span>
+<span class="fc" id="L191">						b.getHeight(),</span>
+<span class="fc" id="L192">						b.printIDs(&quot;;&quot;),</span>
+						&quot;Appended On Chain (parentless)&quot;,
+<span class="fc" id="L194">	                    b.getValidationDifficulty(),</span>
+<span class="fc" id="L195">	                    b.getValidationCycles());				</span>
+				
+<span class="fc" id="L197">				processOrphans();</span>
+
+			} else {
+				//Blockchain is not empty, but you could not find non conflicting path to the root.
+				//Impossible except in the case where the block is a propagated genesis child.
+				
+				//It is a genesis block
+				 
+<span class="fc" id="L205">				b.setParent(null); // it was already but for clarity</span>
+<span class="fc" id="L206">				b.setHeight(1);</span>
+<span class="fc" id="L207">				addBlock(b);</span>
+								
+<span class="fc" id="L209">				tips.add(b);</span>
+
+<span class="fc" id="L211">				processOrphans();</span>
+			
+				//Log this unusual case
+<span class="fc" id="L214">				BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+	            		Simulation.currTime,
+<span class="fc" id="L217">	            		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="fc" id="L218">	            		b.getCurrentNodeID(),</span>
+<span class="pc bpc" id="L219" title="1 of 2 branches missed.">						b.getID(),((b.getParent() == null) ? -1 : b.getParent().getID()),</span>
+<span class="fc" id="L220">						b.getHeight(),</span>
+<span class="fc" id="L221">						b.printIDs(&quot;;&quot;),</span>
+						&quot;[Propagated genesis child?] Added to genesis.&quot;, 
+<span class="fc" id="L223">	                    b.getValidationDifficulty(),</span>
+<span class="fc" id="L224">	                    b.getValidationCycles());				</span>
+			}
+<span class="fc" id="L226">		} else {</span>
+			//It is a genesis block
+<span class="fc" id="L228">			b.setParent(null); // it was already but for clarity</span>
+<span class="fc" id="L229">			b.setHeight(1);</span>
+<span class="fc" id="L230">			addBlock(b);</span>
+			
+<span class="fc" id="L232">			tips.add(b);</span>
+
+<span class="fc" id="L234">			processOrphans();</span>
+		}
+<span class="fc" id="L236">	}</span>
+
+	/**
+	 * Adds a {@linkplain Block} to the blockchain and updates the allTx BitSet.
+	 * @param b The {@linkplain Block} to be added.
+	 */
+	private void addBlock(Block b) {
+<span class="fc" id="L243">		blockchain.add(b);</span>
+		// TODO: The method addGroup does not exist in the engine
+		// allTx.addGroup(b);
+<span class="fc" id="L246">	}</span>
+	
+
+	//----------------------------------------------------------------
+	// ORPHAN MANAGEMENT
+	//----------------------------------------------------------------
+	
+    /**
+     * Attempts to place all orphan blocks into the blockchain recursively.
+     */
+	private void processOrphans() {
+<span class="fc" id="L257">		ArrayList&lt;Block&gt; orphansCpy = new ArrayList&lt;Block&gt;(orphans);</span>
+<span class="fc" id="L258">		int initNumOrphans = orphans.size();</span>
+<span class="fc" id="L259">		orphans.clear();</span>
+<span class="fc bfc" id="L260" title="All 2 branches covered.">		for (Block b:orphansCpy) {</span>
+<span class="fc" id="L261">			placeBlockInChain(b);</span>
+<span class="fc" id="L262">		}</span>
+<span class="pc bpc" id="L263" title="1 of 4 branches missed.">		if ( (orphans.size() &lt; initNumOrphans) &amp;&amp; (orphans.size() &gt; 0) ){</span>
+			// do it again if the loop above actually affected the blockchain and there are still orphans in the list.
+<span class="nc" id="L265">			processOrphans();</span>
+		}
+<span class="fc" id="L267">	}</span>
+
+	
+
+	/**
+	 * Adds a {@linkplain Block} to the orphans list. 
+	 * @param b The block to be added.
+	 */
+	private void addToOrphans(Block b) {
+<span class="fc" id="L276">		orphans.add(b);</span>
+
+<span class="fc" id="L278">		BitcoinReporter.reportBlockEvent(</span>
+				Simulation.currentSimulationID,
+        		Simulation.currTime,
+<span class="fc" id="L281">        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="fc" id="L282">        		b.getCurrentNodeID(),</span>
+<span class="fc" id="L283">				b.getID(),</span>
+<span class="fc" id="L284">				b.getParent().getID(),-1,</span>
+<span class="fc" id="L285">				b.printIDs(&quot;;&quot;),</span>
+				&quot;Added to Orphans&quot;, 
+<span class="fc" id="L287">                b.getValidationDifficulty(),</span>
+<span class="fc" id="L288">                b.getValidationCycles());	</span>
+<span class="fc" id="L289">	}</span>
+	
+	
+
+	
+	
+	//----------------------------------------------------------------	
+	// OVERLAP MANAGEMENT
+	//----------------------------------------------------------------
+	
+	
+    /**
+     * Checks whether a block overlaps with the transactions in the chain from a given tip to genesis.
+     * 
+     * @param b The {@linkplain Block} to check for overlaps.
+     * @param tip The tip of the chain to check against - also a {@linkplain Block}.
+     * @return {@code true} if an overlap exists, {@code false} otherwise.
+     */
+	public boolean hasChainOverlap(Block b, Block tip) {
+<span class="fc" id="L308">		Block pointer = tip;</span>
+<span class="fc" id="L309">		boolean overlapExists = false;</span>
+		
+		//Do the below while you have not reached and have not found an overlap 
+<span class="fc bfc" id="L312" title="All 4 branches covered.">		while (pointer!=null &amp;&amp; !overlapExists) {</span>
+			
+			//Flip overlapExists if overlap is found.
+<span class="pc bpc" id="L315" title="1 of 4 branches missed.">			overlapExists = (overlapExists || pointer.overlapsWith(b)); </span>
+						
+			// move towards the root
+<span class="fc" id="L318">			pointer = (Block) pointer.getParent();</span>
+		}
+<span class="fc" id="L320">		return(overlapExists);</span>
+	}
+	
+	
+
+	/**
+	 * Given a Block b find the tallest tip whose chain to the genesis does not contain transactions whose ID matches one of the IDs in the transactions in b. Searches form tallest to shortest. Return null if such tip is not found.
+	 * @param b The {@linkplain Block} to be checked against the tips.
+	 * @return The tallest tip whose chain to genesis does not overlap with b. Returns {@code null} if no such tip is found.
+	 */
+	public Block getNonOverlappingTip(Block b) {
+<span class="fc" id="L331">		Block t,winningTip = null;</span>
+<span class="fc" id="L332">		boolean found = false;</span>
+
+		// Sort tips by height
+<span class="fc" id="L335">		Collections.sort(this.tips, new BlockHeightComparator());</span>
+
+		// Loop tips from tallest to shortest
+<span class="fc bfc" id="L338" title="All 4 branches covered.">		for (int i=0; (i &lt; this.tips.size()) &amp;&amp; !found;i++) {</span>
+<span class="fc" id="L339">			t = this.tips.get(i);</span>
+			//Check for overlaps
+<span class="fc bfc" id="L341" title="All 2 branches covered.">			if (!hasChainOverlap(b,t)) {</span>
+<span class="fc" id="L342">				found = true;</span>
+<span class="fc" id="L343">				winningTip = t;</span>
+			}
+		}
+		
+<span class="fc" id="L347">		return (winningTip);</span>
+	}
+	
+	
+	
+	
+	//----------------------------------------------------------------
+	// QUERYING
+	//----------------------------------------------------------------
+	
+	
+	/**
+	 * Finds the parent of a {@linkplain Block} b by ID.
+	 * @param b The {@linkplain Block} whose parent is to be found. 
+	 * @return A pointer to an object implementing ITxContainer (e.g., a {@linkplain Block})
+	 */
+	private ITxContainer findParentOfbyID(Block b) {
+<span class="fc" id="L364">		Block parent = (Block) b.getParent();</span>
+<span class="fc" id="L365">		Block found = null;</span>
+<span class="fc bfc" id="L366" title="All 2 branches covered.">		for (Block l : blockchain) {</span>
+<span class="fc bfc" id="L367" title="All 2 branches covered.">			if (l.getID() == parent.getID()) {</span>
+<span class="fc" id="L368">				found = l;</span>
+<span class="fc" id="L369">				break;</span>
+			}
+<span class="fc" id="L371">		}</span>
+<span class="fc" id="L372">		return(found);</span>
+	}
+	
+
+	/**
+	 * Checks if a {@linkplain Transaction} is contained (anywhere) in the blockchain. Likely to be used in the gossip stage.
+	 *
+	 * @param t The {@linkplain Transaction} to be checked.
+	 * @return Return {@code true} if it is contained {@code false} otherwise.
+	 */
+	public boolean contains(Transaction t) {
+<span class="fc" id="L383">		return(contains(t.getID()));</span>
+		/* boolean found = false;
+		for (Block b : blockchain) {
+			for (Transaction r:b.getTransactions()) {
+				if (r.getID() == t.getID()) found = true;
+			}
+		}
+		return found;
+		*/
+	}
+
+	
+	/**
+	 * Checks if a {@linkplain Transaction} is contained (anywhere) in the blockchain. Likely to be used in the gossip stage. Anywhere here includes stale blocks, but not orphan blocks.
+	 *
+	 * @param txID The {@linkplain Transaction} ID to be checked.
+	 * @return Return {@code true} if it is contained {@code false} otherwise.
+	 */
+	public boolean contains(long txID) {
+		//FIXME: Replace this with an operation on allTx  
+<span class="fc" id="L403">		boolean found = false;</span>
+<span class="fc bfc" id="L404" title="All 2 branches covered.">		for (Block b : blockchain) {</span>
+<span class="fc bfc" id="L405" title="All 2 branches covered.">			if (b.contains(txID)) {</span>
+<span class="fc" id="L406">				found = true;</span>
+			}
+			/*
+			for (Transaction r:b.getTransactions()) {
+				if (r.getID() == txID) found = true;
+			}
+			*/
+<span class="fc" id="L413">		}</span>
+		
+<span class="fc bfc" id="L415" title="All 2 branches covered.">		for (Block b : orphans) {</span>
+<span class="fc bfc" id="L416" title="All 2 branches covered.">			if (b.contains(txID)) {</span>
+<span class="fc" id="L417">				found = true;</span>
+			}
+<span class="fc" id="L419">		}</span>
+				
+<span class="fc" id="L421">		return found;</span>
+	}
+	
+	
+	/**
+	 * Checks if a {@linkplain Block} is contained in the chain that begins from the parent of 
+	 * the block and reaches the genesis. Contained means that any of its transactions is included 
+	 * in the chain being traversed. 
+	 * @param block Is the {@linkplain Block} to be checked.
+	 * @return Return {@code true} if it is contained {@code false} otherwise.
+	 */
+	public boolean contains(Block block) {
+		// Start checking from the parent of the block passed
+<span class="fc" id="L434">		int counter = 1;</span>
+<span class="fc bfc" id="L435" title="All 2 branches covered.">		if (block.getParent() == null) {</span>
+<span class="fc" id="L436">			return false;</span>
+		}
+<span class="fc" id="L438">		Block current = (Block) block.getParent();</span>
+
+		// Traverse the parental structure from the parent of the given block
+<span class="fc bfc" id="L441" title="All 2 branches covered.">		while (current != null) {</span>
+<span class="fc" id="L442">			counter++;</span>
+<span class="fc" id="L443">			boolean found = false;</span>
+
+			// Check if any block in the blockchain overlaps with the current block
+<span class="fc bfc" id="L446" title="All 2 branches covered.">			if (block.overlapsWith(current)) found = true;</span>
+
+<span class="fc bfc" id="L448" title="All 2 branches covered.">			if (found) {</span>
+				// This not supposed to ever be happening. 
+<span class="fc" id="L450">				Reporter.addErrorEntry(&quot;Block &quot; + block.getID() + &quot; is contained in the blockchain at height &quot; + counter);</span>
+<span class="fc" id="L451">                BitcoinReporter.addEvent(</span>
+						Simulation.currentSimulationID,
+						-1,
+                		Simulation.currTime,
+<span class="fc" id="L455">                		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+                		&quot;ERROR: Unexpected block overlap&quot;,
+                		-1,
+<span class="fc" id="L458">                		block.getID(),</span>
+                		&quot;&quot;);
+<span class="fc" id="L460">				return true; // Found the block in the parental structure</span>
+				}
+
+			// Move to the next parent in the chain
+<span class="fc" id="L464">			current = (Block) current.getParent();</span>
+<span class="fc" id="L465">		}</span>
+
+<span class="fc" id="L467">		return false; // Block not found in the parental structure</span>
+	}
+
+	/**
+	 * Returns the depth under tip in which transaction exists, or null if the transaction does not exist. The depth includes the block in which the transaction exists.
+	 * @param tip A pointer to a block from where to traverse the blockchain towards the genesis.
+	 * @param txID The ID of the transaction.
+	 * @return The number of blocks under which the transaction is buried (including the block in which the transaction is in), null if the transaction is not found. 
+	 */
+	public Integer getTransactionDepth(Block tip, long txID) {
+<span class="fc" id="L477">		int depth = 1; </span>
+		
+<span class="pc bpc" id="L479" title="1 of 2 branches missed.">		if (txID == -1) {</span>
+<span class="nc" id="L480">			throw new IllegalArgumentException(&quot;Transaction ID must be a positive number, got &quot; + txID);</span>
+		}
+		
+<span class="fc bfc" id="L483" title="All 2 branches covered.">		if (tip == null) {</span>
+<span class="fc" id="L484">			return (null);</span>
+		}
+		
+<span class="fc" id="L487">		Block currBlock = tip;</span>
+<span class="fc bfc" id="L488" title="All 2 branches covered.">		while (currBlock != null) {</span>
+<span class="fc bfc" id="L489" title="All 2 branches covered.">			if (currBlock.contains(txID)) {</span>
+<span class="fc" id="L490">				return (depth);</span>
+			}
+<span class="fc" id="L492">			currBlock = (Block) currBlock.getParent();</span>
+<span class="fc" id="L493">			depth++;</span>
+		}
+		
+		// If you reached this point, you did not find the 
+		// transactions
+<span class="fc" id="L498">		return(null);</span>
+		
+	}
+
+	public boolean satisfiesDependencies(TransactionGroup g, TxDependencyRegistry reg) {
+		// TODO: The method satisfiesDependenciesOf_InclSelf does not exist in the engine
+		// Temporarily returning true until the method is implemented
+<span class="fc" id="L505">		return true;</span>
+		// return(allTx.satisfiesDependenciesOf_InclSelf(g, reg));
+	}
+
+	
+	public boolean satisfiesDependencies(Transaction t, TxDependencyRegistry reg) {
+<span class="nc" id="L511">		return(allTx.satisfiesDependenciesOf(t, reg));</span>
+	}
+	
+	
+	
+ 	/**
+	 * Returns the height of the blockchain, i.e., the height of the tallest block.
+	 * @return The height of the tallest block in the blockchain. If the blockchain is empty, returns 0.
+	 */
+	public int getBlockchainHeight() {
+<span class="fc" id="L521">		int maxHeight = 0;</span>
+<span class="fc bfc" id="L522" title="All 2 branches covered.">		for (Block block : blockchain) {</span>
+<span class="pc bpc" id="L523" title="1 of 2 branches missed.">			if (block.getHeight() &gt; maxHeight) {</span>
+<span class="fc" id="L524">				maxHeight = block.getHeight();</span>
+			}
+<span class="fc" id="L526">		}</span>
+<span class="fc" id="L527">		return maxHeight;</span>
+	}
+
+	/**
+	 * Returns the tip with the longest height.
+	 * @return The {@code Block} with the longest height from the tips list. If the list is empty, returns null.
+	 */
+	public Block getLongestTip() {
+<span class="fc bfc" id="L535" title="All 2 branches covered.">		if (tips.isEmpty()) {</span>
+<span class="fc" id="L536">			return null;</span>
+		}
+
+<span class="fc" id="L539">		Block longestTip = tips.get(0);</span>
+<span class="fc bfc" id="L540" title="All 2 branches covered.">		for (Block tip : tips) {</span>
+<span class="fc bfc" id="L541" title="All 2 branches covered.">			if (tip.getHeight() &gt; longestTip.getHeight()) {</span>
+<span class="fc" id="L542">				longestTip = tip;</span>
+			}
+<span class="fc" id="L544">		}</span>
+<span class="fc" id="L545">		return longestTip;</span>
+	}
+	
+	/**
+	 * Finds a {@linkplain Block} in the blockchain by its ID.
+	 * @param id The ID of the {@linkplain Block} to be found.
+	 * @return The {@linkplain Block} with the specified ID, or {@code null} if not found.
+	 */
+	public Block getBlockByID(int id) {
+<span class="pc bpc" id="L554" title="1 of 2 branches missed.">		for (Block block : blockchain) {</span>
+<span class="fc bfc" id="L555" title="All 2 branches covered.">			if (block.getID() == id) {</span>
+<span class="fc" id="L556">				return block;</span>
+			}
+<span class="fc" id="L558">		}</span>
+<span class="nc" id="L559">		return null;</span>
+	}
+	
+	
+	/**
+	 * Checks if a transaction is believed by the node, i.e., if it exists in the longest chain.
+	 * This is done by traversing from the longest tip back to genesis
+	 * and checking if any block contains the transaction ID.
+	 * 
+	 * @param txID The ID of the transaction to check.
+	 * @return {@code true} if the transaction is found in the longest chain, {@code false} otherwise.
+	 */
+	@Override
+	public float transactionBelief(long txID) {
+<span class="fc" id="L573">		Block longestTip = getLongestTip();</span>
+		
+<span class="pc bpc" id="L575" title="1 of 2 branches missed.">		if (longestTip == null) {</span>
+<span class="nc" id="L576">			return 0;</span>
+		}
+		
+<span class="fc" id="L579">		boolean found = false;</span>
+<span class="fc" id="L580">		Block current = longestTip;</span>
+<span class="fc bfc" id="L581" title="All 2 branches covered.">		while (current != null) {</span>
+<span class="pc bpc" id="L582" title="1 of 4 branches missed.">			found = (found || current.contains(txID));</span>
+<span class="fc bfc" id="L583" title="All 2 branches covered.">			if (found) break;</span>
+<span class="fc" id="L584">			current = (Block) current.getParent();</span>
+		}
+<span class="fc bfc" id="L586" title="All 2 branches covered.">		return found ? 1.0f : 0.0f;</span>
+	}
+	
+	/**
+	 * Checks if a transaction is fully believed by the node, i.e., if it exists in the longest chain.
+	 * This is done by traversing from the longest tip back to genesis
+	 * and checking if any block contains the transaction ID.
+	 * 
+	 * Implemented as a convenience method using {@linkplain #transactionBelief(long)}.
+	 * 
+	 * @param txID The ID of the transaction to check.
+	 * @return {@code true} if the transaction is found in the longest chain, {@code false} otherwise.
+	 * @see #transactionBelief(long)
+	 */
+	public boolean transactionBelieved(long txID) {
+<span class="fc" id="L601">		float epsilon = 1e-6f;</span>
+<span class="fc bfc" id="L602" title="All 2 branches covered.">		return ( Math.abs(transactionBelief(txID) - 1.0f) &lt; epsilon ); </span>
+	}
+	
+	
+	public Integer getConfirmations(long txID) {
+<span class="fc" id="L607">		return (getTransactionDepth(getLongestTip(),txID));</span>
+	}
+	
+	
+	
+	//	----------------------------------------------------------------
+	// PRINTING
+	//----------------------------------------------------------------
+	
+	
+	/**
+	 * Print structure for direct presentation. Returns comma separated entries of the format: BlockID,ParentID,BlockHeight,Transactions
+	 */
+	@Override
+	public String[] printStructure() {
+<span class="fc" id="L622">		ArrayList&lt;String&gt; result = new ArrayList&lt;String&gt;();</span>
+		String s,par;
+<span class="fc" id="L624">		result.add(&quot;BlockID,ParentID,BlockHeight,Transactions&quot;);</span>
+<span class="fc" id="L625">		Collections.sort(blockchain, new BlockHeightComparator());</span>
+<span class="fc bfc" id="L626" title="All 2 branches covered.">		for (Block b: blockchain) {</span>
+<span class="fc bfc" id="L627" title="All 2 branches covered.">			if (b.hasParent()) {</span>
+<span class="fc" id="L628">				par = &quot;&quot; + b.getParent().getID();</span>
+			} else {
+<span class="fc" id="L630">				par = &quot;&quot; + -1;</span>
+			}
+<span class="fc" id="L632">			s = b.getID() + &quot;,&quot; + par + &quot;,&quot; + b.getHeight() + &quot;,&quot; + b.printIDs(&quot;,&quot;);</span>
+<span class="fc" id="L633">			result.add(s);</span>
+<span class="fc" id="L634">		}</span>
+<span class="fc" id="L635">		return (result.toArray(new String[result.size()]));</span>
+	}
+
+	
+	/**
+	 * Like {@linkplain #printStructure()} but with additional information including the ID of the node it exists. 
+	 * @param nodeID Node ID to be included in the report.
+	 * @return An array of comma separated entries with format: SimTime, SysTime, (both at the time of the report) NodeID, BlockID, ParentID, Height, Content (list of transactions), Place (blockchain).
+	 */
+	public String[] printStructureReport(int nodeID) {
+<span class="nc" id="L645">		ArrayList&lt;String&gt; result = new ArrayList&lt;String&gt;();</span>
+		String s,par;
+<span class="nc" id="L647">		Long realTime = System.currentTimeMillis() - Simulation.sysStartTime;</span>
+<span class="nc" id="L648">		Collections.sort(blockchain, new BlockHeightComparator());</span>
+<span class="nc bnc" id="L649" title="All 2 branches missed.">		for (Block b: blockchain) {</span>
+<span class="nc bnc" id="L650" title="All 2 branches missed.">			if (b.hasParent()) {</span>
+<span class="nc" id="L651">				par = &quot;&quot; + b.getParent().getID();</span>
+			} else {
+<span class="nc" id="L653">				par = &quot;&quot; + -1;</span>
+			}
+			//SimTime, SysTime, NodeID, BlockID, ParentID, Height, Content, Place
+<span class="nc" id="L656">			s = Simulation.currentSimulationID + &quot;,&quot; + Simulation.currTime + &quot;,&quot; + realTime + &quot;,&quot; +  nodeID + &quot;,&quot; +  b.getID() + &quot;,&quot; + par + &quot;,&quot; + b.getHeight() + &quot;,&quot; + b.printIDs(&quot;;&quot;) + &quot;, blockchain&quot;;</span>
+<span class="nc" id="L657">			result.add(s);</span>
+<span class="nc" id="L658">		}</span>
+<span class="nc" id="L659">		return (result.toArray(new String[result.size()]));</span>
+	}
+	
+	/**
+	 * Prints the orphans list.
+	 * @return An array of comma separated entries, one orphan per entry, in the format: BlockID, ParentID, Transactions (list of contained transaction IDs).
+	 */
+	public String[] printOrphans() {
+<span class="fc" id="L667">		ArrayList&lt;String&gt; result = new ArrayList&lt;String&gt;();</span>
+		String s;
+<span class="fc" id="L669">		result.add(&quot;BlockID,ParentID,Transactions&quot;);</span>
+<span class="fc bfc" id="L670" title="All 2 branches covered.">		for (Block b: orphans) {</span>
+<span class="fc" id="L671">			s = b.getID() + &quot;,&quot; + b.getParent().getID() + &quot;,&quot; + b.printIDs(&quot;,&quot;);</span>
+<span class="fc" id="L672">			result.add(s);</span>
+<span class="fc" id="L673">		}</span>
+<span class="fc" id="L674">		return (result.toArray(new String[result.size()]));</span>
+	}
+	
+	/**
+	 * Like {@linkplain Blockchain#printOrphans()} with additional information.
+	 * @param nodeID The node ID to be reported.
+	 * @return  An array of comma separated entries, one orphan per entry, in the format: SimTime, SysTime, (both at the time of the report) NodeID, BlockID, ParentID, Height, Content (list of transactions), Place (blockchain).
+	 */
+	public String[] printOrphansReport(int nodeID) {
+<span class="nc" id="L683">		ArrayList&lt;String&gt; result = new ArrayList&lt;String&gt;();</span>
+		String s;
+<span class="nc" id="L685">		Long realTime = System.currentTimeMillis() - Simulation.sysStartTime;</span>
+<span class="nc bnc" id="L686" title="All 2 branches missed.">		for (Block b: orphans) {</span>
+			//SimTime, SysTime, NodeID, BlockID, ParentID, Height, Content, Place
+<span class="nc" id="L688">			s = Simulation.currentSimulationID + &quot;,&quot; + Simulation.currTime + &quot;,&quot; + realTime + &quot;,&quot; + nodeID + &quot;,&quot; +  b.getID() + &quot;,&quot; + b.getParent().getID() + &quot;,-1,&quot; + b.printIDs(&quot;;&quot;) + &quot;, orphans&quot;;</span>
+<span class="nc" id="L689">			result.add(s);</span>
+<span class="nc" id="L690">		}</span>
+<span class="nc" id="L691">		return (result.toArray(new String[result.size()]));</span>
+	}
+		
+    /**
+     * Prints the IDs of the {@linkplain Block}s currently in the list of tips
+     * @param sep The character to separate the entries with (e.g. &quot;,&quot; for comma)
+     * @return A string listing the IDs of the tips.
+     */
+    public String printTips(String sep) {
+<span class="fc" id="L700">    	String s = &quot;{&quot;;</span>
+<span class="fc bfc" id="L701" title="All 2 branches covered.">    	for(Block t:tips) {</span>
+<span class="fc" id="L702">    		s += t.getID() + sep;</span>
+<span class="fc" id="L703">    	}</span>
+<span class="pc bpc" id="L704" title="1 of 2 branches missed.">    	if (s.length()&gt;1) </span>
+<span class="fc" id="L705">    		s = s.substring(0, s.length()-1) + &quot;}&quot;;</span>
+    	else 
+<span class="nc" id="L707">    		s = s + &quot;}&quot;;</span>
+<span class="fc" id="L708">    	return (s);</span>
+    }
+
+    
+    public String printTipsHash(String sep) {
+<span class="nc" id="L713">    	String s = &quot;{&quot;;</span>
+<span class="nc bnc" id="L714" title="All 2 branches missed.">    	for(Block t:tips) {</span>
+<span class="nc" id="L715">    		s += t.hashCode() + &quot;(&quot; + t.getID() + &quot;)&quot; + sep;</span>
+<span class="nc" id="L716">    	}</span>
+<span class="nc bnc" id="L717" title="All 2 branches missed.">    	if (s.length()&gt;1) </span>
+<span class="nc" id="L718">    		s = s.substring(0, s.length()-1) + &quot;}&quot;;</span>
+    	else 
+<span class="nc" id="L720">    		s = s + &quot;}&quot;;</span>
+<span class="nc" id="L721">    	return (s);</span>
+    }
+
+
+	/**	
+	 * Prints the longest chain from the tip to genesis.
+	 * @return A human-readable string representing the longest chain.
+	 */
+	public String printLongestChain() {
+<span class="nc" id="L730">		StringBuilder result = new StringBuilder();</span>
+<span class="nc" id="L731">		Block longestTip = getLongestTip();</span>
+<span class="nc bnc" id="L732" title="All 2 branches missed.">		if (longestTip == null) {</span>
+<span class="nc" id="L733">			return &quot;No longest tip found&quot;;</span>
+		}
+<span class="nc" id="L735">		Block current = longestTip;</span>
+<span class="nc" id="L736">		result.append(&quot;Longest chain &quot; + &quot; with tip &quot;).append(longestTip.getID()).append(&quot; and height &quot;).append(longestTip.getHeight()).append(&quot;:\n&quot;);</span>
+<span class="nc bnc" id="L737" title="All 2 branches missed.">		while (current != null) {</span>
+<span class="nc" id="L738">			result.append(&quot;Block &quot;).append(current.getID()).append(&quot; with height &quot;).append(current.getHeight()).append(&quot; and transactions &quot;).append(current.printIDs(&quot;,&quot;)).append(&quot;\n&quot;);</span>
+<span class="nc" id="L739">			current = (Block) current.getParent();</span>
+		}
+<span class="nc" id="L741">		return result.toString();</span>
+	}
+
+
+	// --------------------
+	// GETTERS
+	// --------------------
+
+	public TransactionGroup getTransactionGroup() {
+<span class="nc" id="L750">		return allTx;</span>
+	}
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.14.202510111229</span></div></body></html>

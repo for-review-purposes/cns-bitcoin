@@ -1,0 +1,769 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MaliciousNodeBehavior_Deprecated.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">CNS Bitcoin (cns-bitcoin)</a> &gt; <a href="index.source.html" class="el_package">dom.institution.lab.cns.bitcoin.node</a> &gt; <span class="el_source">MaliciousNodeBehavior_Deprecated.java</span></div><h1>MaliciousNodeBehavior_Deprecated.java</h1><pre class="source lang-java linenums">package dom.institution.lab.cns.bitcoin.node;
+import dom.institution.lab.cns.bitcoin.reporter.BitcoinReporter;
+import dom.institution.lab.cns.bitcoin.structure.Block;
+import dom.institution.lab.cns.engine.Debug;
+import dom.institution.lab.cns.engine.Simulation;
+import dom.institution.lab.cns.engine.config.Config;
+import dom.institution.lab.cns.engine.transaction.ITxContainer;
+import dom.institution.lab.cns.engine.transaction.Transaction;
+
+import java.util.ArrayList;
+
+public class MaliciousNodeBehavior_Deprecated extends DefaultNodeBehavior {
+    /**
+     * Minimum number of blocks the attacker must mine on the hidden chain before attempting to reveal it.
+     * The attacker will only reveal the hidden chain if it is at least this many blocks longer than when the attack started.
+     * Configured via {@code attack.minChainLength} property.
+     */
+    private int minChainLength;
+
+    /**
+     * Maximum number of blocks the attacker will mine on the hidden chain before revealing regardless of public chain status.
+     * This prevents the attacker from falling too far behind if the public chain is growing faster.
+     * Once the hidden chain reaches this length, it will be revealed even if not ahead of the public chain.
+     * Configured via {@code attack.maxChainLength} property.
+     */
+    private int maxChainLength;
+
+<span class="nc" id="L28">    private ArrayList&lt;Block&gt; hiddenChain=new ArrayList&lt;Block&gt;();</span>
+    private Transaction targetTransaction;
+	private int targetTxID;
+
+<span class="nc" id="L32">    private boolean isAttackInProgress = false;</span>
+    // Note: node field is inherited from DefaultNodeBehavior
+    private HonestNodeBehavior honestBehavior;
+    private int blockchainSizeAtAttackStart;
+    private Block lastBlock;
+    private int publicChainGrowthSinceAttack;
+
+    /** Number of block confirmations required before starting the attack (0 = immediate). */
+<span class="nc" id="L40">    private int requiredConfirmationsBeforeAttack = 0;</span>
+
+    /** Height of the block containing the target transaction (-1 if not yet found). */
+<span class="nc" id="L43">    private int targetTransactionBlockHeight = -1;</span>
+
+
+    
+    /**
+     * Constructor. Creates also a shadow honest behavior object.
+     * Reads chain length parameters from configuration.
+     * @param node The node which has the behavior.
+     */
+<span class="nc" id="L52">    public MaliciousNodeBehavior_Deprecated(BitcoinNode node) {</span>
+<span class="nc" id="L53">        this.isAttackInProgress = false;</span>
+<span class="nc" id="L54">        this.node = node;</span>
+<span class="nc" id="L55">        this.honestBehavior = new HonestNodeBehavior(node);</span>
+
+        // Read chain length parameters from configuration with default values
+        try {
+<span class="nc" id="L59">            this.minChainLength = Config.getPropertyInt(&quot;attack.minChainLength&quot;);</span>
+<span class="nc" id="L60">        } catch (Exception e) {</span>
+<span class="nc" id="L61">            this.minChainLength = 2; // Default value</span>
+<span class="nc" id="L62">        }</span>
+
+        try {
+<span class="nc" id="L65">            this.maxChainLength = Config.getPropertyInt(&quot;attack.maxChainLength&quot;);</span>
+<span class="nc" id="L66">        } catch (Exception e) {</span>
+<span class="nc" id="L67">            this.maxChainLength = 15; // Default value</span>
+<span class="nc" id="L68">        }</span>
+
+        // Read required confirmations before attack from configuration (default: 0 = immediate)
+        try {
+<span class="nc" id="L72">            this.requiredConfirmationsBeforeAttack = Config.getPropertyInt(&quot;attack.requiredConfirmations&quot;);</span>
+<span class="nc" id="L73">        } catch (Exception e) {</span>
+<span class="nc" id="L74">            this.requiredConfirmationsBeforeAttack = 0; // Default value: immediate attack</span>
+<span class="nc" id="L75">        }</span>
+<span class="nc" id="L76">    }</span>
+
+
+
+    @Override
+    public void event_NodeReceivesClientTransaction(Transaction t, long time) {
+<span class="nc" id="L82">        honestBehavior.event_NodeReceivesClientTransaction(t, time);</span>
+<span class="nc" id="L83">    }</span>
+
+    @Override
+    public void event_NodeReceivesPropagatedTransaction(Transaction t, long time) {
+<span class="nc" id="L87">        honestBehavior.event_NodeReceivesPropagatedTransaction(t, time);</span>
+<span class="nc" id="L88">    }</span>
+
+    private void startAttack(Block b) {
+<span class="nc" id="L91">        BitcoinReporter.reportBlockEvent(</span>
+				Simulation.currentSimulationID,
+        		Simulation.currTime,
+<span class="nc" id="L94">        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L95">        		b.getCurrentNodeID(),</span>
+<span class="nc" id="L96">                b.getID(),</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">                ((b.getParent() == null) ? -1 : b.getParent().getID()),</span>
+<span class="nc" id="L98">                b.getHeight(),</span>
+<span class="nc" id="L99">                b.printIDs(&quot;;&quot;),</span>
+                &quot;Target Transaction &quot; + targetTxID + &quot; Appeared - Attack Starts&quot;, 
+<span class="nc" id="L101">                b.getValidationDifficulty(),</span>
+<span class="nc" id="L102">                b.getValidationCycles());</span>
+        
+        
+<span class="nc" id="L105">        BitcoinReporter.addEvent(</span>
+				Simulation.currentSimulationID,
+				-1,
+        		Simulation.currTime,
+<span class="nc" id="L109">        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+        		&quot;Attack Starts&quot;,
+<span class="nc" id="L111">        		node.getID(),</span>
+<span class="nc" id="L112">        		b.getID(),</span>
+        		&quot;&quot;);
+        
+<span class="nc" id="L115">        isAttackInProgress = true;</span>
+<span class="nc" id="L116">        calculateBlockchainSizeAtAttackStart();</span>
+        //Debug.p(&quot;Starting attack! at time &quot; + Simulation.currTime);
+
+        // Report attack start event
+<span class="nc" id="L120">        BitcoinReporter.reportAttackEvent(</span>
+<span class="nc" id="L121">                node.getSim().getSimID(),</span>
+                Simulation.currTime,
+<span class="nc" id="L123">                System.currentTimeMillis(),</span>
+<span class="nc" id="L124">                node.getID(),</span>
+                &quot;Attack Start&quot;,
+                targetTxID,
+<span class="nc" id="L127">                b.getID(),</span>
+                targetTransactionBlockHeight,
+                0, // hidden chain length at start
+<span class="nc" id="L130">                node.getStructure().getBlockchainHeight(),</span>
+                &quot;Attack initiated after &quot; + requiredConfirmationsBeforeAttack + &quot; confirmations&quot;
+        );
+<span class="nc" id="L133">    }</span>
+
+
+    @Override
+    public void event_NodeReceivesPropagatedContainer(ITxContainer t) {
+<span class="nc" id="L138">        Block b = (Block) t;</span>
+        
+        //updateBlockContext(b);
+        
+<span class="nc" id="L142">        b.setCurrentNodeID(node.getID());</span>
+<span class="nc" id="L143">        b.setLastBlockEvent(&quot;Node Receives Propagated Block&quot;);</span>
+<span class="nc" id="L144">        b.setValidationCycles(-1.0);</span>
+<span class="nc" id="L145">        b.setValidationDifficulty(-1.0);</span>
+     
+<span class="nc" id="L147">        BitcoinReporter.reportBlockEvent(</span>
+				Simulation.currentSimulationID,
+        		Simulation.currTime,
+<span class="nc" id="L150">        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L151">        		b.getCurrentNodeID(),</span>
+<span class="nc" id="L152">                b.getID(),</span>
+<span class="nc bnc" id="L153" title="All 2 branches missed.">                ((b.getParent() == null) ? -1 : b.getParent().getID()),b.getHeight(),</span>
+<span class="nc" id="L154">                b.printIDs(&quot;;&quot;),</span>
+<span class="nc" id="L155">                b.getLastBlockEvent(), </span>
+<span class="nc" id="L156">                b.getValidationDifficulty(),</span>
+<span class="nc" id="L157">                b.getValidationCycles());</span>
+        
+        // Check if the received block contains the target transaction
+<span class="nc bnc" id="L160" title="All 4 branches missed.">        if (!isAttackInProgress &amp;&amp; t.contains(targetTxID)) {</span>
+<span class="nc" id="L161">            lastBlock = (Block) b.getParent();</span>
+<span class="nc bnc" id="L162" title="All 2 branches missed.">            if (!node.getStructure().contains(b)) {</span>
+                //reportBlockEvent(b, b.getContext().blockEvt);
+<span class="nc" id="L164">                handleNewBlockReceptionInAttack(b);</span>
+
+                // Record the transaction block height if not already set
+<span class="nc bnc" id="L167" title="All 2 branches missed.">                if (targetTransactionBlockHeight == -1) {</span>
+<span class="nc" id="L168">                    targetTransactionBlockHeight = b.getHeight();</span>
+
+                    // Report target transaction arrival
+<span class="nc" id="L171">                    BitcoinReporter.reportAttackEvent(</span>
+<span class="nc" id="L172">                            node.getSim().getSimID(),</span>
+                            Simulation.currTime,
+<span class="nc" id="L174">                            System.currentTimeMillis(),</span>
+<span class="nc" id="L175">                            node.getID(),</span>
+                            &quot;Target TX Arrival&quot;,
+                            targetTxID,
+<span class="nc" id="L178">                            b.getID(),</span>
+<span class="nc" id="L179">                            b.getHeight(),</span>
+                            0,
+<span class="nc" id="L181">                            node.getStructure().getBlockchainHeight(),</span>
+<span class="nc" id="L182">                            &quot;Target transaction &quot; + targetTxID + &quot; appeared in block &quot; + b.getID()</span>
+                    );
+                }
+
+                // Check if we have enough confirmations before starting attack
+<span class="nc bnc" id="L187" title="All 2 branches missed.">                if (hasEnoughConfirmations()) {</span>
+<span class="nc" id="L188">                    startAttack(b);</span>
+                } else {
+                    // Not enough confirmations yet - log and wait
+<span class="nc" id="L191">                    int currentConfirmations = getCurrentConfirmations();</span>
+                    /* Debug.p(&quot;Target transaction appeared at height &quot; + targetTransactionBlockHeight +
+                            &quot;, waiting for &quot; + requiredConfirmationsBeforeAttack +
+                            &quot; confirmations. Current: &quot; + currentConfirmations); */
+<span class="nc" id="L195">                    BitcoinReporter.addEvent(</span>
+    						Simulation.currentSimulationID,
+    						-1,
+                    		Simulation.currTime,
+<span class="nc" id="L199">                    		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+                    		&quot;Target Transaction Pops Up at &quot; + targetTransactionBlockHeight + &quot; waiting for &quot; + requiredConfirmationsBeforeAttack + &quot; confirmations. Current: &quot; + currentConfirmations,
+<span class="nc" id="L201">                    		node.getID(),</span>
+<span class="nc" id="L202">                    		b.getID(),</span>
+                    		&quot;&quot;);
+                    
+<span class="nc" id="L205">                }</span>
+            } else { //Does not contain target transaction
+<span class="nc" id="L207">                BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+                		Simulation.currTime,
+<span class="nc" id="L210">                		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L211">                		b.getCurrentNodeID(),</span>
+<span class="nc" id="L212">                        b.getID(),</span>
+<span class="nc bnc" id="L213" title="All 2 branches missed.">                        ((b.getParent() == null) ? -1 : b.getParent().getID()),b.getHeight(),</span>
+<span class="nc" id="L214">                        b.printIDs(&quot;;&quot;),</span>
+                        &quot;Propagated Block Discarded (already exists)&quot;,
+<span class="nc" id="L216">                        b.getValidationDifficulty(),</span>
+<span class="nc" id="L217">                        b.getValidationCycles());</span>
+                //reportBlockEvent(b, &quot;Propagated Block Discarded&quot;);
+            }
+        }
+<span class="nc bnc" id="L221" title="All 2 branches missed.">        else if (isAttackInProgress) { //attack is in progress or block does not contain target</span>
+<span class="nc bnc" id="L222" title="All 2 branches missed.">            if (!node.getStructure().contains(b)) {</span>
+                //reportBlockEvent(b, b.getContext().blockEvt);
+<span class="nc" id="L224">                handleNewBlockReceptionInAttack(b);</span>
+            } else {
+                //Discard the block and report the event.
+<span class="nc" id="L227">                BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+                		Simulation.currTime,
+<span class="nc" id="L230">                		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L231">                		b.getCurrentNodeID(),</span>
+<span class="nc" id="L232">                        b.getID(),</span>
+<span class="nc bnc" id="L233" title="All 2 branches missed.">                        ((b.getParent() == null) ? -1 : b.getParent().getID()),b.getHeight(),</span>
+<span class="nc" id="L234">                        b.printIDs(&quot;;&quot;),</span>
+                        &quot;Propagated Block Discarded (already exists)&quot;,
+<span class="nc" id="L236">                        b.getValidationDifficulty(),</span>
+<span class="nc" id="L237">                        b.getValidationCycles());</span>
+                //reportBlockEvent(b, &quot;Propagated Block Discarded&quot;);
+            }
+<span class="nc" id="L240">            checkAndRevealHiddenChain(b);</span>
+        }
+        else { //attack not in progress
+            // Check if we're waiting for confirmations and now have enough
+<span class="nc bnc" id="L244" title="All 4 branches missed.">            if (targetTransactionBlockHeight != -1 &amp;&amp; !hasEnoughConfirmations()) {</span>
+                // We've seen the target transaction but don't have enough confirmations yet
+                // Check if this new block gives us enough confirmations
+<span class="nc bnc" id="L247" title="All 2 branches missed.">                if (!node.getStructure().contains(b)) {</span>
+<span class="nc" id="L248">                    honestBehavior.handleNewBlockReception(b);</span>
+
+                    // After adding the block, check again if we have enough confirmations
+<span class="nc bnc" id="L251" title="All 2 branches missed.">                    if (hasEnoughConfirmations()) {</span>
+                        // Find the block containing the target transaction and start the attack
+<span class="nc" id="L253">                        Block targetBlock = findBlockContainingTransaction(targetTxID);</span>
+<span class="nc bnc" id="L254" title="All 2 branches missed.">                        if (targetBlock != null) {</span>
+<span class="nc" id="L255">                            lastBlock = (Block) targetBlock.getParent();</span>
+<span class="nc" id="L256">                            startAttack(targetBlock);</span>
+                        }
+<span class="nc" id="L258">                    } else {</span>
+<span class="nc" id="L259">                        int currentConfirmations = getCurrentConfirmations();</span>
+                        /* Debug.p(&quot;Received new block at height &quot; + b.getHeight() +
+                                &quot;, waiting for &quot; + requiredConfirmationsBeforeAttack +
+                                &quot; confirmations. Current: &quot; + currentConfirmations); */
+<span class="nc" id="L263">                        BitcoinReporter.addEvent(</span>
+        						Simulation.currentSimulationID,
+        						-1,
+                        		Simulation.currTime,
+<span class="nc" id="L267">                        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L268">                        		&quot;Attacker received new block at height &quot; + b.getHeight() +</span>
+                                &quot; waiting for &quot; + requiredConfirmationsBeforeAttack +
+                                &quot; confirmations. Current: &quot; + currentConfirmations,
+<span class="nc" id="L271">                        		node.getID(),</span>
+<span class="nc" id="L272">                        		b.getID(),</span>
+                        		&quot;&quot;);
+<span class="nc" id="L274">                    }</span>
+                } else {
+<span class="nc" id="L276">                    BitcoinReporter.reportBlockEvent(</span>
+                            Simulation.currentSimulationID,
+                            Simulation.currTime,
+<span class="nc" id="L279">                            System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L280">                            b.getCurrentNodeID(),</span>
+<span class="nc" id="L281">                            b.getID(),</span>
+<span class="nc bnc" id="L282" title="All 2 branches missed.">                            ((b.getParent() == null) ? -1 : b.getParent().getID()),b.getHeight(),</span>
+<span class="nc" id="L283">                            b.printIDs(&quot;;&quot;),</span>
+                            &quot;Propagated Block Discarded (already exists)&quot;,
+<span class="nc" id="L285">                            b.getValidationDifficulty(),</span>
+<span class="nc" id="L286">                            b.getValidationCycles());</span>
+                }
+            } else {
+                // Normal honest behavior (no target transaction yet, or confirmations already met)
+<span class="nc bnc" id="L290" title="All 2 branches missed.">                if (!node.getStructure().contains(b)) {</span>
+                    //reportBlockEvent(b, b.getContext().blockEvt);
+<span class="nc" id="L292">                    honestBehavior.handleNewBlockReception(b);</span>
+                } else {
+                    //reportBlockEvent(b, &quot;Propagated Block Discarded&quot;);
+<span class="nc" id="L295">                    BitcoinReporter.reportBlockEvent(</span>
+                            Simulation.currentSimulationID,
+                            Simulation.currTime,
+<span class="nc" id="L298">                            System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L299">                            b.getCurrentNodeID(),</span>
+<span class="nc" id="L300">                            b.getID(),</span>
+<span class="nc bnc" id="L301" title="All 2 branches missed.">                            ((b.getParent() == null) ? -1 : b.getParent().getID()),b.getHeight(),</span>
+<span class="nc" id="L302">                            b.printIDs(&quot;;&quot;),</span>
+                            &quot;Propagated Block Discarded (already exists)&quot;,
+<span class="nc" id="L304">                            b.getValidationDifficulty(),</span>
+<span class="nc" id="L305">                            b.getValidationCycles());</span>
+                }
+            }
+        }
+<span class="nc" id="L309">    }</span>
+
+
+
+    @Override
+    public void event_NodeCompletesValidation(ITxContainer t, long time) {
+<span class="nc bnc" id="L315" title="All 2 branches missed.">        if (isAttackInProgress) {</span>
+<span class="nc" id="L316">            Block newBlock = (Block) t;</span>
+<span class="nc" id="L317">            newBlock.validateBlock(node.getMiningPool(),</span>
+            		Simulation.currTime, 
+<span class="nc" id="L319">            		System.currentTimeMillis()- Simulation.sysStartTime, </span>
+<span class="nc" id="L320">            		node.getID(), </span>
+            		&quot;Node Completes Validation&quot;, 
+<span class="nc" id="L322">            		node.getOperatingDifficulty(), </span>
+<span class="nc" id="L323">            		node.getProspectiveCycles());</span>
+            
+<span class="nc" id="L325">            node.completeValidation(node.getMiningPool(), time);</span>
+
+<span class="nc" id="L327">            BitcoinReporter.reportBlockEvent(</span>
+					Simulation.currentSimulationID,
+<span class="nc" id="L329">            		newBlock.getSimTime_validation(),</span>
+<span class="nc" id="L330">            		newBlock.getSysTime_validation() - Simulation.sysStartTime,</span>
+<span class="nc" id="L331">            		newBlock.getValidationNodeID(),</span>
+<span class="nc bnc" id="L332" title="All 2 branches missed.">            		newBlock.getID(),((newBlock.getParent() == null) ? -1 : newBlock.getParent().getID()),</span>
+<span class="nc" id="L333">            		newBlock.getHeight(),</span>
+<span class="nc" id="L334">            		newBlock.printIDs(&quot;;&quot;),</span>
+                    &quot;Node Completes Validation&quot;,
+<span class="nc" id="L336">                    newBlock.getValidationDifficulty(),</span>
+<span class="nc" id="L337">                    newBlock.getValidationCycles());</span>
+            
+            
+<span class="nc bnc" id="L340" title="All 2 branches missed.">            if (!node.getStructure().contains(newBlock)) {</span>
+                //reportBlockEvent(newBlock, newBlock.getContext().blockEvt);
+<span class="nc" id="L342">                BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+<span class="nc" id="L344">                		newBlock.getSimTime_validation(),</span>
+<span class="nc" id="L345">                		newBlock.getSysTime_validation() - Simulation.sysStartTime,</span>
+<span class="nc" id="L346">                		newBlock.getValidationNodeID(),</span>
+<span class="nc bnc" id="L347" title="All 2 branches missed.">                		newBlock.getID(),((newBlock.getParent() == null) ? -1 : newBlock.getParent().getID()),</span>
+<span class="nc" id="L348">                		newBlock.getHeight(),</span>
+<span class="nc" id="L349">                		newBlock.printIDs(&quot;;&quot;),</span>
+                        &quot;Adding block to hidden chain&quot;,
+<span class="nc" id="L351">                        newBlock.getValidationDifficulty(),</span>
+<span class="nc" id="L352">                        newBlock.getValidationCycles());</span>
+<span class="nc" id="L353">                hiddenChain.add(newBlock);</span>
+            } else {
+                //System.out.println(node.getID()+ &quot; contains &quot; + newBlock.getID() + &quot; in its blockchain in completes validation&quot;);
+                //System.out.println(node.getID()+ &quot; contains &quot; + newBlock.getID() + &quot; in its blockchain in completes validation&quot;);
+                //reportBlockEvent(newBlock, &quot;Discarding own Block (ERROR)&quot;);
+<span class="nc" id="L358">                BitcoinReporter.reportBlockEvent(</span>
+						Simulation.currentSimulationID,
+<span class="nc" id="L360">                		newBlock.getSimTime_validation(),</span>
+<span class="nc" id="L361">                		newBlock.getSysTime_validation() - Simulation.sysStartTime,</span>
+<span class="nc" id="L362">                		newBlock.getValidationNodeID(),</span>
+<span class="nc bnc" id="L363" title="All 2 branches missed.">                		newBlock.getID(),((newBlock.getParent() == null) ? -1 : newBlock.getParent().getID()),</span>
+<span class="nc" id="L364">                		newBlock.getHeight(),</span>
+<span class="nc" id="L365">                		newBlock.printIDs(&quot;;&quot;),</span>
+                        &quot;ERROR: Discarding own Block&quot;,
+<span class="nc" id="L367">                        newBlock.getValidationDifficulty(),</span>
+<span class="nc" id="L368">                        newBlock.getValidationCycles());</span>
+            }
+<span class="nc" id="L370">            manageMiningPostValidation();</span>
+<span class="nc" id="L371">            checkAndRevealHiddenChain(newBlock);</span>
+<span class="nc" id="L372">        } else { //Attack not in progress</span>
+<span class="nc" id="L373">            Block b = (Block) t;</span>
+<span class="nc" id="L374">            b.validateBlock(node.getMiningPool(),</span>
+            		Simulation.currTime, 
+<span class="nc" id="L376">            		System.currentTimeMillis() - Simulation.sysStartTime, </span>
+<span class="nc" id="L377">            		node.getID(), </span>
+            		&quot;Node Completes Validation&quot;, 
+<span class="nc" id="L379">            		node.getOperatingDifficulty(), </span>
+<span class="nc" id="L380">            		node.getProspectiveCycles());</span>
+            //node.completeValidation(node.miningPool, time);
+<span class="nc" id="L382">            node.completeValidation(node.getMiningPool(), time);</span>
+
+
+
+<span class="nc bnc" id="L386" title="All 2 branches missed.">            if(b.contains(targetTxID)){</span>
+<span class="nc bnc" id="L387" title="All 2 branches missed.">                if (!node.getStructure().contains(b)) {</span>
+                    //Report validation
+                    //reportBlockEvent(b, b.getContext().blockEvt);
+<span class="nc" id="L390">                    BitcoinReporter.reportBlockEvent(</span>
+    						Simulation.currentSimulationID,
+<span class="nc" id="L392">                    		b.getSimTime_validation(),</span>
+<span class="nc" id="L393">                    		b.getSysTime_validation() - Simulation.sysStartTime,</span>
+<span class="nc" id="L394">                    		b.getValidationNodeID(),</span>
+<span class="nc bnc" id="L395" title="All 2 branches missed.">                    		b.getID(),((b.getParent() == null) ? -1 : b.getParent().getID()),</span>
+<span class="nc" id="L396">                    		b.getHeight(),</span>
+<span class="nc" id="L397">                    		b.printIDs(&quot;;&quot;),</span>
+                            &quot;Node Completes Validation&quot;,
+<span class="nc" id="L399">                            b.getValidationDifficulty(),</span>
+<span class="nc" id="L400">                            b.getValidationCycles());</span>
+
+<span class="nc" id="L402">                    node.getStructure().addToStructure(b);</span>
+<span class="nc" id="L403">                    node.broadcastContainer(b, time);</span>
+<span class="nc" id="L404">                    lastBlock = (Block) b.getParent();</span>
+
+                    // Record the transaction block height if not already set
+<span class="nc bnc" id="L407" title="All 2 branches missed.">                    if (targetTransactionBlockHeight == -1) {</span>
+<span class="nc" id="L408">                        targetTransactionBlockHeight = b.getHeight();</span>
+                    }
+
+                    // Check if we have enough confirmations before starting attack
+<span class="nc bnc" id="L412" title="All 2 branches missed.">                    if (hasEnoughConfirmations()) {</span>
+<span class="nc" id="L413">                        startAttack(b);</span>
+                    } else {
+                        // Not enough confirmations yet - log and wait
+<span class="nc" id="L416">                        int currentConfirmations = getCurrentConfirmations();</span>
+                        /* Debug.p(&quot;Node completed validation of block with target transaction at height &quot; +
+                                targetTransactionBlockHeight + &quot;, waiting for &quot; +
+                                requiredConfirmationsBeforeAttack + &quot; confirmations. Current: &quot; +
+                                currentConfirmations); */
+<span class="nc" id="L421">                        BitcoinReporter.addEvent(</span>
+        						Simulation.currentSimulationID,
+        						-1,
+                        		Simulation.currTime,
+<span class="nc" id="L425">                        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+                        		&quot;Node completed validation of block with target transaction at height &quot; +
+                                        targetTransactionBlockHeight + &quot; waiting for &quot; +
+                                        requiredConfirmationsBeforeAttack + &quot; confirmations. Current: &quot; +
+                                        currentConfirmations,
+<span class="nc" id="L430">                        		node.getID(),</span>
+<span class="nc" id="L431">                        		b.getID(),</span>
+                        		&quot;&quot;);
+                    }
+
+<span class="nc" id="L435">                    node.stopMining();</span>
+<span class="nc" id="L436">                    node.resetNextValidationEvent();</span>
+<span class="nc" id="L437">                    reconstructMiningPool();</span>
+<span class="nc" id="L438">                    node.getMiningPool().removeTransaction(targetTxID);</span>
+<span class="nc" id="L439">                    considerMining(Simulation.currTime);</span>
+                } else {
+<span class="nc" id="L441">                    BitcoinReporter.reportBlockEvent(</span>
+    						Simulation.currentSimulationID,
+<span class="nc" id="L443">                    		b.getSimTime_validation(),</span>
+<span class="nc" id="L444">                    		b.getSysTime_validation() - Simulation.sysStartTime,</span>
+<span class="nc" id="L445">                    		b.getValidationNodeID(),</span>
+<span class="nc bnc" id="L446" title="All 2 branches missed.">                    		b.getID(),((b.getParent() == null) ? -1 : b.getParent().getID()),</span>
+<span class="nc" id="L447">                    		b.getHeight(),</span>
+<span class="nc" id="L448">                    		b.printIDs(&quot;;&quot;),</span>
+                            &quot;Error: Discarding own Block&quot;,
+<span class="nc" id="L450">                            b.getValidationDifficulty(),</span>
+<span class="nc" id="L451">                            b.getValidationCycles());</span>
+<span class="nc" id="L452">                    System.out.println(node.getID()+ &quot; contains &quot; + b.getID() + &quot; in its blockchain in completes validation&quot;);</span>
+                    //reportBlockEvent(b, &quot;Discarding own Block (ERROR)&quot;);
+                }
+<span class="nc" id="L455">                node.stopMining();</span>
+<span class="nc" id="L456">                node.resetNextValidationEvent();</span>
+<span class="nc" id="L457">                reconstructMiningPool();</span>
+<span class="nc" id="L458">                node.getMiningPool().removeTransaction(targetTxID);</span>
+<span class="nc" id="L459">                considerMining(Simulation.currTime);</span>
+            } else {
+<span class="nc" id="L461">                b.setParent(node.getStructure().getLongestTip());</span>
+<span class="nc bnc" id="L462" title="All 2 branches missed.">                if (!node.getStructure().contains(b)){</span>
+                    //reportBlockEvent(b, b.getContext().blockEvt);
+<span class="nc" id="L464">                    BitcoinReporter.reportBlockEvent(</span>
+    						Simulation.currentSimulationID,
+<span class="nc" id="L466">                    		b.getSimTime_validation(),</span>
+<span class="nc" id="L467">                    		b.getSysTime_validation() - Simulation.sysStartTime,</span>
+<span class="nc" id="L468">                    		b.getValidationNodeID(),</span>
+<span class="nc bnc" id="L469" title="All 2 branches missed.">                    		b.getID(),((b.getParent() == null) ? -1 : b.getParent().getID()),</span>
+<span class="nc" id="L470">                    		b.getHeight(),</span>
+<span class="nc" id="L471">                    		b.printIDs(&quot;;&quot;),</span>
+                            &quot;Node Completes Validation&quot;,
+<span class="nc" id="L473">                            b.getValidationDifficulty(),</span>
+<span class="nc" id="L474">                            b.getValidationCycles());</span>
+                	
+<span class="nc" id="L476">                    b.setParent(null);</span>
+<span class="nc" id="L477">                    node.getStructure().addToStructure(b);</span>
+                    try {
+                    	//Propagate a clone of the block to the rest of the network
+<span class="nc" id="L480">						node.broadcastContainer((ITxContainer) b.clone(), time);</span>
+<span class="nc" id="L481">					} catch (CloneNotSupportedException e) {</span>
+						// TODO Auto-generated catch block
+<span class="nc" id="L483">						e.printStackTrace();</span>
+<span class="nc" id="L484">					}</span>
+                } else {
+                    //reportBlockEvent(b, &quot;Discarding own Block (ERROR)&quot;);
+<span class="nc" id="L487">                    BitcoinReporter.reportBlockEvent(</span>
+    						Simulation.currentSimulationID,
+<span class="nc" id="L489">                    		b.getSimTime_validation(),</span>
+<span class="nc" id="L490">                    		b.getSysTime_validation() - Simulation.sysStartTime,</span>
+<span class="nc" id="L491">                    		b.getValidationNodeID(),</span>
+<span class="nc bnc" id="L492" title="All 2 branches missed.">                    		b.getID(),((b.getParent() == null) ? -1 : b.getParent().getID()),</span>
+<span class="nc" id="L493">                    		b.getHeight(),</span>
+<span class="nc" id="L494">                    		b.printIDs(&quot;;&quot;),</span>
+                            &quot;Error: Discarding own Block&quot;,
+<span class="nc" id="L496">                            b.getValidationDifficulty(),</span>
+<span class="nc" id="L497">                            b.getValidationCycles());</span>
+                }
+<span class="nc" id="L499">                honestBehavior.processPostValidationActivities(time);</span>
+            }
+        }
+<span class="nc" id="L502">    }</span>
+
+    private void revealHiddenChain() {
+        // Store the blockchain height before revealing
+<span class="nc" id="L506">        int publicChainHeightBeforeReveal = node.getStructure().getBlockchainHeight();</span>
+
+<span class="nc bnc" id="L508" title="All 2 branches missed.">        for (int i = hiddenChain.size()-1; i &gt;= 0; i--) {</span>
+<span class="nc" id="L509">            Block b = hiddenChain.get(i);</span>
+<span class="nc bnc" id="L510" title="All 2 branches missed.">            b.setParent(i==0 ? lastBlock : hiddenChain.get(i-1));</span>
+<span class="nc" id="L511">            node.getStructure().addToStructure(b);</span>
+<span class="nc" id="L512">            node.broadcastContainer(b, Simulation.currTime);</span>
+        }
+
+<span class="nc" id="L515">        int revealedChainLength = hiddenChain.size();</span>
+
+        // Check if attack succeeded by comparing final blockchain height
+        // If the revealed chain became the longest chain, the height will have increased
+<span class="nc" id="L519">        int finalBlockchainHeight = node.getStructure().getBlockchainHeight();</span>
+<span class="nc" id="L520">        Block newLongestTip = node.getStructure().getLongestTip();</span>
+
+        // Check if the longest tip now is part of the revealed hidden chain
+        // The attack succeeds if the hidden chain became the main chain
+<span class="nc bnc" id="L524" title="All 2 branches missed.">        boolean attackSucceeded = finalBlockchainHeight &gt; publicChainHeightBeforeReveal;</span>
+
+<span class="nc" id="L526">        isAttackInProgress = false;</span>
+<span class="nc" id="L527">        hiddenChain = new ArrayList&lt;Block&gt;();</span>
+<span class="nc" id="L528">        node.removeFromPool(targetTxID);</span>
+
+        //Debug.p(&quot;Chain reveal! at time &quot; + Simulation.currTime);
+<span class="nc" id="L531">        BitcoinReporter.addEvent(</span>
+				Simulation.currentSimulationID,
+				-1,
+        		Simulation.currTime,
+<span class="nc" id="L535">        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+        		&quot;Chain Reveal&quot;,
+<span class="nc" id="L537">        		node.getID(),</span>
+        		-1,
+        		&quot;&quot;);
+
+
+        // Report chain reveal event
+<span class="nc" id="L543">        BitcoinReporter.reportAttackEvent(</span>
+<span class="nc" id="L544">                node.getSim().getSimID(),</span>
+                Simulation.currTime,
+<span class="nc" id="L546">                System.currentTimeMillis(),</span>
+<span class="nc" id="L547">                node.getID(),</span>
+                &quot;Chain Reveal&quot;,
+                targetTxID,
+                -1,
+                targetTransactionBlockHeight,
+                revealedChainLength,
+                finalBlockchainHeight,
+                &quot;Revealed hidden chain of length &quot; + revealedChainLength
+        );
+
+        // Report attack outcome
+<span class="nc bnc" id="L558" title="All 2 branches missed.">        String outcomeEvent = attackSucceeded ? &quot;Attack Success&quot; : &quot;Attack Failed&quot;;</span>
+<span class="nc bnc" id="L559" title="All 2 branches missed.">        String outcomeDescription = attackSucceeded</span>
+<span class="nc" id="L560">            ? &quot;Hidden chain became the longest chain (height: &quot; + finalBlockchainHeight + &quot;)&quot;</span>
+<span class="nc" id="L561">            : &quot;Hidden chain was not long enough (public: &quot; + publicChainHeightBeforeReveal + &quot;, hidden: &quot; + revealedChainLength + &quot;)&quot;;</span>
+
+<span class="nc" id="L563">        BitcoinReporter.reportAttackEvent(</span>
+<span class="nc" id="L564">                node.getSim().getSimID(),</span>
+                Simulation.currTime,
+<span class="nc" id="L566">                System.currentTimeMillis(),</span>
+<span class="nc" id="L567">                node.getID(),</span>
+                outcomeEvent,
+                targetTxID,
+                -1,
+                targetTransactionBlockHeight,
+                revealedChainLength,
+                finalBlockchainHeight,
+                outcomeDescription
+        );
+
+<span class="nc" id="L577">        BitcoinReporter.addEvent(</span>
+				Simulation.currentSimulationID,
+				-1,
+        		Simulation.currTime,
+<span class="nc" id="L581">        		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+        		outcomeEvent + &quot;: &quot; + outcomeDescription,
+<span class="nc" id="L583">        		node.getID(),</span>
+        		-1,
+        		&quot;&quot;);
+<span class="nc" id="L586">    }</span>
+
+    
+    /*
+    private void reportBlockEvent(Block b, String blockEvt) {
+        BitcoinReporter.reportBlockEvent(
+				Simulation.currentSimulationID,b.getContext().simTime, b.getContext().sysTime  - Simulation.sysStartTime, b.getContext().nodeID,
+                b.getID(),((b.getParent() == null) ? -1 : b.getParent().getID()),b.getHeight(),b.printIDs(&quot;;&quot;),
+                blockEvt, b.getContext().difficulty,b.getContext().cycles);
+    }
+
+    private void updateBlockContext(Block b) {
+        //TODO: updating of context here seems wrong!
+        //Update context information for reporting
+        b.getContext().simTime = Simulation.currTime;
+        b.getContext().sysTime = System.currentTimeMillis() - Simulation.sysStartTime;
+        b.getContext().nodeID = node.getID();
+        b.getContext().blockEvt = &quot;Node Receives Propagated Block&quot;;
+        b.getContext().cycles = -1;
+        b.getContext().difficulty = -1;
+    }
+
+     */
+
+    public void setTargetTransaction(Transaction targetTransaction) {
+<span class="nc" id="L611">        this.targetTransaction = targetTransaction;</span>
+<span class="nc" id="L612">    }</span>
+
+    public void setTargetTransaction(int targetTxID) {
+<span class="nc" id="L615">        this.targetTxID = targetTxID;</span>
+<span class="nc" id="L616">    }</span>
+
+    /**
+     * Sets the number of block confirmations required before starting the attack.
+     * A confirmation means a new block has been added on top of the block containing the target transaction.
+     *
+     * @param confirmations the number of confirmations (0 = start attack immediately when transaction appears)
+     */
+    public void setRequiredConfirmationsBeforeAttack(int confirmations) {
+<span class="nc bnc" id="L625" title="All 2 branches missed.">        if (confirmations &lt; 0) {</span>
+<span class="nc" id="L626">            throw new IllegalArgumentException(&quot;Required confirmations cannot be negative&quot;);</span>
+        }
+<span class="nc" id="L628">        this.requiredConfirmationsBeforeAttack = confirmations;</span>
+<span class="nc" id="L629">    }</span>
+
+    /**
+     * Gets the number of block confirmations required before starting the attack.
+     *
+     * @return the required confirmations
+     */
+    public int getRequiredConfirmationsBeforeAttack() {
+<span class="nc" id="L637">        return requiredConfirmationsBeforeAttack;</span>
+    }
+
+    
+    
+    private void manageMiningPostValidation() {
+<span class="nc" id="L643">        node.stopMining();</span>
+<span class="nc" id="L644">        node.resetNextValidationEvent();</span>
+<span class="nc" id="L645">        node.removeFromPool(node.getMiningPool());</span>
+<span class="nc" id="L646">        reconstructMiningPool();</span>
+<span class="nc" id="L647">        node.getMiningPool().removeTransaction(targetTxID);</span>
+<span class="nc" id="L648">        considerMining(Simulation.currTime);</span>
+<span class="nc" id="L649">    }</span>
+
+    private void calculateBlockchainSizeAtAttackStart() {
+<span class="nc bnc" id="L652" title="All 2 branches missed.">        if (node.getStructure().getBlockchainHeight() == 0) {</span>
+<span class="nc" id="L653">            blockchainSizeAtAttackStart = 0;</span>
+<span class="nc" id="L654">            return;</span>
+        }
+<span class="nc" id="L656">        Block tip = node.getStructure().getLongestTip();</span>
+<span class="nc bnc" id="L657" title="All 2 branches missed.">        blockchainSizeAtAttackStart = tip.contains(targetTxID) ? tip.getHeight() - 1 : tip.getHeight();</span>
+<span class="nc" id="L658">    }</span>
+
+    private void handleNewBlockReceptionInAttack(Block b) {
+<span class="nc" id="L661">        node.getStructure().addToStructure(b);</span>
+<span class="nc" id="L662">        reconstructMiningPool();</span>
+<span class="nc" id="L663">        node.getMiningPool().removeTransaction(targetTxID);</span>
+<span class="nc" id="L664">        considerMining(Simulation.currTime);</span>
+<span class="nc" id="L665">    }</span>
+
+    private boolean shouldRevealHiddenChain() {
+        // Reveal when:
+        // 1. Hidden chain is ahead AND public chain has grown past minimum length, OR
+        // 2. Public chain has grown too much (emergency reveal to avoid losing everything)
+<span class="nc bnc" id="L671" title="All 6 branches missed.">        return (hiddenChain.size() &gt; publicChainGrowthSinceAttack &amp;&amp; publicChainGrowthSinceAttack &gt;= minChainLength)</span>
+                || publicChainGrowthSinceAttack &gt;= maxChainLength;
+    }
+
+    private void checkAndRevealHiddenChain(Block b) {
+<span class="nc" id="L676">        publicChainGrowthSinceAttack = node.getStructure().getLongestTip().getHeight() - blockchainSizeAtAttackStart;</span>
+<span class="nc bnc" id="L677" title="All 2 branches missed.">        if (shouldRevealHiddenChain()) {</span>
+<span class="nc" id="L678">            BitcoinReporter.reportBlockEvent(</span>
+					Simulation.currentSimulationID,
+            		Simulation.currTime,
+<span class="nc" id="L681">            		System.currentTimeMillis() - Simulation.sysStartTime,</span>
+<span class="nc" id="L682">            		b.getCurrentNodeID(),</span>
+<span class="nc" id="L683">                    b.getID(),</span>
+<span class="nc bnc" id="L684" title="All 2 branches missed.">                    ((b.getParent() == null) ? -1 : b.getParent().getID()),b.getHeight(),</span>
+<span class="nc" id="L685">                    b.printIDs(&quot;;&quot;),</span>
+                    &quot;Reveal of hidden chain starts here.&quot;,
+<span class="nc" id="L687">                    b.getValidationDifficulty(),</span>
+<span class="nc" id="L688">                    b.getValidationCycles());</span>
+<span class="nc" id="L689">            revealHiddenChain();</span>
+        }
+<span class="nc" id="L691">    }</span>
+
+    /**
+     * Calculates the current number of confirmations for the target transaction.
+     * A transaction has N confirmations when there are N blocks built on top of
+     * the block containing the transaction.
+     *
+     * @return the number of confirmations, or -1 if transaction not found or no blockchain structure
+     */
+    private int getCurrentConfirmations() {
+<span class="nc bnc" id="L701" title="All 2 branches missed.">        if (targetTransactionBlockHeight == -1) {</span>
+            // Transaction block height not yet determined
+<span class="nc" id="L703">            return -1;</span>
+        }
+
+<span class="nc bnc" id="L706" title="All 2 branches missed.">        if (node.getStructure() == null) {</span>
+<span class="nc" id="L707">            return -1;</span>
+        }
+
+<span class="nc" id="L710">        Block longestTip = node.getStructure().getLongestTip();</span>
+<span class="nc bnc" id="L711" title="All 2 branches missed.">        if (longestTip == null) {</span>
+<span class="nc" id="L712">            return -1;</span>
+        }
+
+<span class="nc" id="L715">        int currentHeight = longestTip.getHeight();</span>
+        // Add 1 because being in the block itself counts as 1 confirmation
+        // Height 5 with TX at height 5 = 1 confirmation, height 6 = 2 confirmations, etc.
+<span class="nc" id="L718">        int confirmations = currentHeight - targetTransactionBlockHeight + 1;</span>
+<span class="nc" id="L719">        return Math.max(0, confirmations);</span>
+    }
+
+    /**
+     * Checks if enough confirmations have occurred to start the attack.
+     *
+     * @return true if attack should start, false if waiting for more confirmations
+     */
+    private boolean hasEnoughConfirmations() {
+<span class="nc bnc" id="L728" title="All 2 branches missed.">        if (requiredConfirmationsBeforeAttack == 0) {</span>
+<span class="nc" id="L729">            return true; // Immediate attack</span>
+        }
+
+<span class="nc" id="L732">        int currentConfirmations = getCurrentConfirmations();</span>
+<span class="nc bnc" id="L733" title="All 2 branches missed.">        return currentConfirmations &gt;= requiredConfirmationsBeforeAttack;</span>
+    }
+
+    /**
+     * Finds and returns the block containing the target transaction.
+     * Since Blockchain doesn't expose getBlockchain(), we traverse from the longest tip
+     * back to genesis to find the transaction.
+     *
+     * @param targetTxID the transaction ID to search for
+     * @return the block containing the transaction, or null if not found
+     */
+    private Block findBlockContainingTransaction(int targetTxID) {
+<span class="nc bnc" id="L745" title="All 2 branches missed.">        if (node.getStructure() == null) {</span>
+<span class="nc" id="L746">            return null;</span>
+        }
+
+<span class="nc" id="L749">        Block longestTip = node.getStructure().getLongestTip();</span>
+<span class="nc bnc" id="L750" title="All 2 branches missed.">        if (longestTip == null) {</span>
+<span class="nc" id="L751">            return null;</span>
+        }
+
+        // Traverse from tip to genesis
+<span class="nc" id="L755">        Block current = longestTip;</span>
+<span class="nc bnc" id="L756" title="All 2 branches missed.">        while (current != null) {</span>
+<span class="nc bnc" id="L757" title="All 2 branches missed.">            if (current.contains(targetTxID)) {</span>
+<span class="nc" id="L758">                return current;</span>
+            }
+<span class="nc" id="L760">            current = (Block) current.getParent();</span>
+        }
+
+<span class="nc" id="L763">        return null;</span>
+    }
+}
+
+
+
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.14.202510111229</span></div></body></html>

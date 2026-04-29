@@ -1,0 +1,1 @@
+packageSearchIndex = [{"l":"All Packages","u":"allpackages-index.html"},{"l":"dom.institution.lab.cns.bitcoin"},{"l":"dom.institution.lab.cns.bitcoin.node"},{"l":"dom.institution.lab.cns.bitcoin.reporter"},{"l":"dom.institution.lab.cns.bitcoin.structure"},{"l":"dom.institution.lab.cns.bitcoin.utils"}];updateSearchResults();
